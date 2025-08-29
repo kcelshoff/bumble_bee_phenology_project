@@ -1,0 +1,19 @@
+"","species","response","model","dAIC","df"
+"1","griseocollis","queen onset","mYearGDD",0,2
+"2","griseocollis","queen onset","mAvgGDD",31.845562555839,2
+"3","griseocollis","queen onset","m0",108.99882475732,1
+"4","griseocollis","male onset","mYearGDD",0,2
+"5","griseocollis","male onset","mAvgGDD",119.512557492166,2
+"6","griseocollis","male onset","m0",1435.35980966382,1
+"7","griseocollis","male end","mYearGDD",0,2
+"8","griseocollis","male end","mAvgGDD",90.895658975307,2
+"9","griseocollis","male end","m0",580.487943822605,1
+"10","impatiens","queen onset","mYearGDD",0,2
+"11","impatiens","queen onset","mAvgGDD",40.2521496013869,2
+"12","impatiens","queen onset","m0",163.494650381466,1
+"13","impatiens","male onset","mYearGDD",0,2
+"14","impatiens","male onset","mAvgGDD",2.14861297104653,2
+"15","impatiens","male onset","m0",91.8849605853247,1
+"16","impatiens","male end","mAvgGDD",0,2
+"17","impatiens","male end","mYearGDD",6.1270243211402,2
+"18","impatiens","male end","m0",90.8711325335535,1
