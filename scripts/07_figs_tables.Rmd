@@ -1,0 +1,816 @@
+---
+title: "07_figures"
+author: "Kyle Elshoff"
+date: "2025-07-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# setting working directory (change root.dir to the name of the path you store the project folder under)
+knitr::opts_knit$set(root.dir = "C:/Users/Kyle/Desktop/BumbleBeePhenology2024")
+
+```
+
+```{r loading packages, functions, vectors}
+
+# packages to load
+packages <- c("tidyverse", "conflicted", "RColorBrewer", "rvg", "officer", "here", "raster", "sf", "patchwork", "quantreg", "ggtext", "scales", "ggspatial")
+# installing packages not yet installed
+installedPackages <- packages %in% rownames(installed.packages())
+if (any(installedPackages == FALSE)) {
+  install.packages(packages[!installedPackages])
+}
+# loading all packages
+invisible(lapply(packages, library, character.only = TRUE))
+
+# getting number of species in analysis
+nSpecies <- 14
+
+# creating an epithets list
+epithets <- c(
+  "auricomus", "bimaculatus", "borealis", "fervidus", "fraternus", "griseocollis",
+  "impatiens","pensylvanicus","perplexus","rufocinctus","sandersoni","ternarius",
+  "terricola","vagans"
+  )
+
+# creating a useful function that is the complement of  %in%
+"%!in%" <- function(x, y){
+  !('%in%'(x, y))
+}
+
+```
+
+```{r FIG 1: Map of bumble bee occurrences}
+
+# load bumble bee occurrence data used in this study
+bumblesFinal <- read.csv("data/clean_data/bumbles_final.csv")
+
+# creating a vector of species in order of most to least abundant in our dataset
+speciesByAbund <- bumblesFinal %>% 
+  group_by(species) %>% 
+  summarize(sampleSize = n()) %>% 
+  ungroup() %>% 
+  arrange(desc(sampleSize))
+
+# grouping species together for plotting into 4 plots, by abundance
+bumblesGrouped <- bumblesFinal %>% 
+  mutate(
+    # dividing bumbles into four groups in descending order of abundance
+    bb_group = case_when(
+      species %in% c("impatiens", "griseocollis") ~ "(a)",
+      species %in% c("bimaculatus", "ternarius", "pensylvanicus") ~ "(b)",
+      species %in% c("rufocinctus", "vagans", "perplexus", "fervidus") ~ "(c)",
+      species %in% c("auricomus", "terricola", "borealis", "fraternus", "sandersoni") ~ "(d)"
+    ),
+    # grouping bumbles by their position in each abundance group (1 = most abundant in said group)
+    group_no = case_when(
+      species %in% c("impatiens", "bimaculatus", "rufocinctus", "auricomus") ~ "1",
+      species %in% c("griseocollis", "ternarius", "vagans", "terricola") ~ "2",
+      species %in% c("pensylvanicus", "perplexus", "borealis") ~ "3",
+      species %in% c("fervidus", "fraternus") ~ "4",
+      species %in% c("sandersoni") ~ "5"
+    )
+  )
+
+# reordering species in bumblesGrouped for easier plotting
+bumblesGrouped$species <- as.factor(bumblesGrouped$species)
+levels(bumblesGrouped$species) <- speciesByAbund$species
+
+# load north america points
+northAmerica <- read.csv("data/clean_data/north_america_points.csv")
+
+# making northAmerica into an sf object
+northAmericaPoly <- northAmerica %>% 
+  st_as_sf(coords = 1:2) %>% 
+  group_by(group, region) %>% 
+  summarize(do_union = FALSE) %>% 
+  st_cast("POLYGON")
+
+# setting the coordinate reference system of north america poly
+st_crs(northAmericaPoly) <- 4326
+
+# creating breaks for map x and y axes
+xbreaks <- seq(-100, -50, 5)
+ybreaks <- seq(25, 55, 5)
+
+# creating a basemap to use for figs 1 and S2
+basemap <- ggplot()+
+  # creating north America outline
+  geom_sf(data = northAmericaPoly, fill = "gray90")+
+  annotation_scale(style = "ticks", location = "br", pad_x = unit(1.25, "cm"))+
+  annotation_north_arrow(location = "br", height = unit(1, "cm"), width = unit(0.75, "cm"))+
+  # cropping map and adjusting aspect ratio
+  coord_sf(xlim = c(-95, -52.5), ylim = c(27.5, 52.5), label_axes = "--EN", expand = FALSE)+
+  # getting the right amount of breaks on the x and y axes
+  scale_x_continuous(breaks = xbreaks)+
+  scale_y_continuous(breaks = ybreaks)+
+  # adjusting other settings
+  theme(
+    panel.background = element_rect(fill = "white"),
+    panel.border = element_rect(color = "black", fill = NA),
+    axis.title = element_blank(),
+    axis.text = element_text(color = "black"),
+    panel.grid = element_blank()
+  )
+
+# creating bumble color scheme
+# color-blind friendly color scheme (8 colors) from Masataka Okabe and Kei Ito
+cb_safe_colors <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+# creating a color scheme based on species position within each abundance group
+bumbleColorsCB <- c(cb_safe_colors[6], cb_safe_colors[7], cb_safe_colors[2], cb_safe_colors[4], cb_safe_colors[8])
+
+# creating breaks for map x and y axes
+xbreaksBumble <- seq(-100, -50, 10)
+
+# creating a map of bumble bee occurrences
+bumbleMap <- basemap+
+  # adding points
+  geom_point(data = bumblesGrouped, 
+             aes(x = longitude, y = latitude, color = group_no), size = 0.5, shape = 3)+
+  facet_wrap(bb_group ~ ., strip.position = "top")+
+  # setting them to a color scheme
+  scale_colour_manual(values = bumbleColorsCB)+
+  scale_x_continuous(breaks = xbreaksBumble)+
+  # adjusting other settings
+  theme(
+    strip.background = element_blank(),
+    strip.placement = "outside",
+    strip.text = element_text(hjust = 0),
+    legend.position = "none"
+  )
+bumbleMap
+
+# saving the file
+ggsave("figs_tables/r_outputs/fig_01.png", bumbleMap, width = 18, height = 15, units = "cm")
+
+```
+
+```{r FIG 02: flight period responses to climate variables and growing season length}
+
+# loading in the required data if not already loaded--these are CSVs with the estimates of coefficients and SE from the pheno driver models
+onsetSEFinal <- read.csv("outputs/script_04_pheno_drivers/onset_SE.csv")
+endSEFinal <- read.csv("outputs/script_04_pheno_drivers/end_SE.csv")
+
+# joining all of the driver data (onset and end) into one data frame
+# marking onset data as "onset"
+onsetSEFinalonset <- onsetSEFinal %>% 
+  mutate(response = "onset")
+# marking end data as "end"
+endSEFinalend <- endSEFinal %>% 
+  add_row(species = "fraternus", predictor = "avgGDD5", estimate = 0) %>% 
+  mutate(response = "end")
+# joining them together
+driversSEFinal <- onsetSEFinalonset %>% 
+  rbind(endSEFinalend)
+# cleaning up intermediate objects
+rm(onsetSEFinalonset, endSEFinalend)
+
+# making a function to get the data in a better format for plotting and descriptive stats
+df.Plotting <- function(df){
+  # getting combinations of all species and predictors
+  dfCross <- df %>% 
+    dplyr::filter(predictor != "(Intercept)") %>% 
+    group_by(response) %>% 
+    expand(species, predictor) %>% 
+    mutate(
+      # coding predictors by what drivers they represent
+      driver = ifelse(grepl("GDD", predictor), "temperature", "precipitation"),
+      variation = ifelse(grepl("avg", predictor), "spatial", "temporal")
+    ) %>% 
+    ungroup()
+  # joining the full dataframe to this to get species/predictor combinations with NAs and making them zeros for plotting
+  dfNew <- dfCross %>% 
+    left_join(df) %>% 
+    dplyr::select(-c(tvalue, pvalue, CI95)) %>% 
+    replace(is.na(.),0) %>% 
+    mutate(
+      # making species names full
+      species = paste0("B. ", species)
+      )
+}
+
+# running function: making the plotting data frame
+driversPlotData <- df.Plotting(driversSEFinal) %>% 
+  mutate(varDrive = paste0(driver, " (", variation, ")"))
+
+# create a function to plot driver coef data
+plot.Drivers <- function(df, phenoDriver = c("temperature", "precipitation")){
+  ggplot(df, aes(x = estimate, y = species, fill = predictor))+
+    geom_col(position = position_dodge(width = 0.9))+
+    geom_errorbar(aes(xmin = estimate-SE, xmax = estimate+SE), width = 0.4, 
+                  position = position_dodge(width = 0.9))+
+    geom_vline(xintercept = 0)+
+    geom_hline(yintercept = seq(0.5, length(epithets), by = 1), color = "grey", linewidth = 0.25)+
+    labs(
+      x = "standardized effect size"
+    )+
+    geom_text(aes(label = if_else(estimate == 0, "0", NA)), 
+              position = position_dodge(width = 1),
+              hjust = -0.5)+
+    scale_fill_manual(values = case_when(
+      phenoDriver == "temperature"~c("salmon4", "salmon2"),
+      phenoDriver == "precipitation"~c("skyblue4", "skyblue2")
+    ), labels = case_when(
+      phenoDriver == "temperature"~c("average GDD", "GDD differential"),
+      phenoDriver == "precipitation"~c("average precipitation", "SPI")
+    )
+    )+
+    scale_x_continuous(limits = c(-26,10))+
+    theme_classic()+
+    theme(
+      axis.text.y = element_text(face = "italic", color = "black"),
+      axis.text.x = element_text(color = "black"),
+      axis.title.y = element_blank(),
+      legend.title = element_blank(),
+      axis.title.x = element_blank()
+    )
+}
+
+# making a function to rearrange species levels based on values of estimate
+rearrange.Species <- function(df){
+  dfNew <- df %>% 
+    arrange(estimate) %>% 
+    mutate(species = as.factor(species) %>% 
+             factor(species, species))
+}
+
+# effects of temperature on onset and consistent across species (negative), in most cases AvgGDD+GDDdiff are both included
+
+# rearrange stuff
+onsetTempForPlot <- driversPlotData %>% 
+  dplyr::filter(response == "onset" & driver == "temperature") %>% 
+  rearrange.Species()
+
+# plot
+onsetTempPlot <- plot.Drivers(onsetTempForPlot, phenoDriver = "temperature")+
+    theme(
+      axis.text.x = element_blank(),
+      axis.title.x = element_blank(),
+      axis.line.x = element_blank(),
+      axis.ticks.x = element_blank()
+    )
+
+# effects of temperature on end are generally strong and vary by species; most species display earlier end of phenology in warmer conditions. also, best predictor varies more between avg and year GDD
+
+# reordering species factor levels for plotting
+endTempForPlot <- driversPlotData %>% 
+  dplyr::filter(response == "end" & driver == "temperature")
+
+endTempForPlot$species <- factor(endTempForPlot$species, levels = levels(onsetTempForPlot$species))
+
+# plot
+endTempPlot <- plot.Drivers(endTempForPlot, phenoDriver = "temperature")+
+    theme(
+      axis.text.y = element_blank(),
+      axis.line.x = element_blank(),
+      axis.line.y = element_blank(),
+      axis.ticks.x = element_blank(),
+      axis.ticks.y = element_blank(),
+      axis.text.x = element_blank()
+    )
+
+# effects of precip on onset inconsistent
+
+# creating a table for plotting
+onsetPrecipForPlot <- driversPlotData %>% 
+  dplyr::filter(response == "onset" & driver == "precipitation")
+onsetPrecipForPlot$species <- factor(onsetPrecipForPlot$species, levels = levels(onsetTempForPlot$species))
+
+# plot
+onsetPrecipPlot <- plot.Drivers(onsetPrecipForPlot, phenoDriver = "precipitation")
+
+# summer precipitation has affects on end, seem to be consistent within a species between spatial and temporal variation. some species end later in wetter conditions, some species end earlier
+# creating a table for plotting
+endPrecipForPlot <- driversPlotData %>% 
+  dplyr::filter(response == "end" & driver == "precipitation") %>% 
+  mutate(
+    species = as.factor(species)
+  )
+endPrecipForPlot$species <- factor(endPrecipForPlot$species, levels = levels(onsetTempForPlot$species))
+
+# plot
+endPrecipPlot <- plot.Drivers(endPrecipForPlot, phenoDriver = "precipitation")+
+   theme(
+      axis.text.y = element_blank(),
+      axis.line.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      axis.title.x = element_blank()
+    )
+
+# creating the delta flight period duration plot
+# making a table that is good for plotting -- formalizing species name, arranging them in order of lowest dFPD to largest
+deltaFPD <- read.csv("outputs/script_05_fp_duration/delta_fp_duration.csv")
+
+dFPDplotting <- deltaFPD %>% 
+  add_column(epithets) %>% 
+  arrange(estimate_dFPD) %>% 
+  mutate(
+    species = paste0("B. ", epithets),
+    species = as.factor(species)
+  )
+
+dFPDplotting$species <- factor(dFPDplotting$species, levels = levels(onsetTempForPlot$species))
+
+dFPDplot <- ggplot(dFPDplotting, aes(x = estimate_dFPD, y = species))+
+  geom_col(fill = "darkolivegreen4")+
+  geom_errorbar(aes(xmax = estimate_dFPD+SE_dFPD,
+               xmin = estimate_dFPD-SE_dFPD),
+               width = 0.33, linewidth = 0.5)+
+  geom_vline(xintercept = 0)+
+  labs(
+    x = expression(Delta*" flight period (d"%.%"GDD"^-1*")")
+  )+
+  theme_classic()+
+  theme(
+    axis.text.x = element_text(color = "black"),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.line.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.x = element_text(size = 10)
+  )
+
+# put all driver results in a single plot
+resultsPanel <- onsetTempPlot+endTempPlot+guide_area()+onsetPrecipPlot+endPrecipPlot+dFPDplot+
+  plot_layout(guides = "collect", axes = "collect_x")+
+  plot_annotation(tag_levels = list(c("(a)", "(b)", "(c)", "(d)", "(e)")),
+                  theme = theme(plot.margin = unit(c(0.1,0.1,0.1,0.1), "cm")))&
+  theme(
+      plot.tag = element_text(size = 10),
+      plot.margin = unit(c(0,0,0,0), "cm"),
+      legend.spacing.y = unit(0.25, "cm")
+  )
+
+ggsave("figs_tables/r_outputs/fig_02.png", resultsPanel, width = 18, height = 12, units = "cm")
+
+```
+
+```{r FIG 03: flight period graphs for 4 species and reproductives of 2 species}
+
+# function to create prediction datasets for each species
+# loading in necessary models
+onsetTempModel <- readRDS("outputs/script_05_fp_duration/onset_temp_model.rds")
+endTempModel <- readRDS("outputs/script_05_fp_duration/end_temp_model.rds")
+
+get.newdata <- function(epithet){
+  olddata <- bumblesFinal %>% 
+    dplyr::filter(species == epithet) %>% 
+    dplyr::select(yearGDD5)
+  newdata <- tibble(
+    species = epithet,
+    yearGDD5 = seq(min(olddata$yearGDD5), max(olddata$yearGDD5), 1),
+    avgGDD5 = seq(min(olddata$yearGDD5), max(olddata$yearGDD5), 1)
+  )
+  
+  newdata$pred_onset <- predict.rq(onsetTempModel[[epithet]], newdata = newdata)
+  newdata$pred_end <- predict.rq(endTempModel[[epithet]], newdata = newdata)
+  newdata$model_onset <- as.character(onsetTempModel[[epithet]]$terms[[3]])
+  newdata$model_end <- as.character(endTempModel[[epithet]]$terms[[3]])
+  
+  return(newdata %>%
+           pivot_longer(cols = c(4:7), names_sep = "_", names_to = c(".value", "response"))
+         )
+}
+
+# creating bumble dataset for plotting
+bumblesFPplot0 <- tibble(
+  species = NA,
+  yearGDD5 = NA,
+  avgGDD5 = NA,
+  response = NA,
+  pred = NA,
+  model = NA
+)
+
+fpSpecies <- c("perplexus", "griseocollis", "pensylvanicus", "impatiens")
+for(i in 1:length(fpSpecies)){
+  bumblesFPplot0 <- bumblesFPplot0 %>% 
+    add_row(get.newdata(fpSpecies[i]))
+}
+
+bumblesFPplot <- bumblesFPplot0[-1,]
+bumblesFPplot$species <- factor(bumblesFPplot$species, levels = fpSpecies)
+bumblesClimateFPplot <- bumblesFinal %>% 
+  dplyr::filter(species %in% fpSpecies)
+bumblesClimateFPplot$species <- factor(bumblesClimateFPplot$species, levels = fpSpecies)
+
+# making sure species names are labeled correctly
+to_string <- as_labeller(c(`perplexus` = "*B. perplexus*", `griseocollis` = "*B. griseocollis*", `pensylvanicus` = "*B. pensylvanicus*", `impatiens` = "*B. impatiens*"))
+
+# making the graphs
+fpPlots <- ggplot()+
+  geom_point(data = bumblesClimateFPplot, aes(x = yearGDD5, y = dayno), color = "gray80", alpha = 0.1)+
+  facet_wrap(vars(species), labeller = to_string)+
+  geom_line(data = bumblesFPplot, aes(x = yearGDD5, y = pred, linetype = response, color = model), linewidth = 1)+ 
+  facet_wrap(vars(species), labeller = to_string)+
+  scale_linetype_manual(values = c("onset" = 1, "end" = 3))+
+  scale_color_manual(name = "predictor", labels = c("avgGDD5" = "average GDD", "yearGDD5" = "annual GDD"), values = c("avgGDD5" = "salmon4", "yearGDD5" = "salmon2"))+
+  theme_classic()+
+  theme(
+    plot.margin = unit(c(0,0,0,0), "cm"),
+    strip.text = element_markdown()
+  )
+
+# Similar function to get new data for caste analyses species
+# function to create prediction datasets for each species
+# loading necessary models
+queenOnsetTempModel <- readRDS("outputs/script_06_castes/queen_onset_temp_model.rds")
+maleOnsetTempModel <- readRDS("outputs/script_06_castes/male_onset_temp_model.rds")
+maleEndTempModel <- readRDS("outputs/script_06_castes/male_end_temp_model.rds")
+
+get.newdataCaste <- function(epithet){
+  olddata <- read.csv(paste0("data/clean_data/", epithet, "_castes.csv")) %>%
+    dplyr::select(yearGDD5)
+  newdata <- tibble(
+    species = epithet,
+    yearGDD5 = seq(min(olddata$yearGDD5), max(olddata$yearGDD5), 1),
+    avgGDD5 = seq(min(olddata$yearGDD5), max(olddata$yearGDD5), 1)
+  )
+  
+  newdata$pred_queen.onset <- predict.rq(queenOnsetTempModel[[epithet]], newdata = newdata)
+    newdata$pred_male.onset <- predict.rq(maleOnsetTempModel[[epithet]], newdata = newdata)
+  newdata$pred_male.end <- predict.rq(maleEndTempModel[[epithet]], newdata = newdata)
+  newdata$model_queen.onset <- as.character(queenOnsetTempModel[[epithet]]$terms[[3]])
+  newdata$model_male.onset <- as.character(maleOnsetTempModel[[epithet]]$terms[[3]])
+  newdata$model_male.end <- as.character(maleEndTempModel[[epithet]]$terms[[3]])
+  
+  return(newdata %>%
+           pivot_longer(cols = c(4:9), names_sep = "_", names_to = c(".value", "response"))
+         )
+}
+
+# creating bumble dataset for plotting
+castesFPplot0 <- tibble(
+  species = NA,
+  yearGDD5 = NA,
+  avgGDD5 = NA,
+  response = NA,
+  pred = NA,
+  model = NA
+)
+
+casteEpithets <- c("griseocollis", "impatiens")
+for(i in 1:length(casteEpithets)){
+  castesFPplot0 <- castesFPplot0 %>% 
+    add_row(get.newdataCaste(casteEpithets[i]))
+}
+castesFPplot <- castesFPplot0[-1,]
+castesFPplot$species <- factor(castesFPplot$species, levels = casteEpithets)
+casteClimateFPplot <- bumblesFinal %>% 
+  dplyr::filter(species %in% casteEpithets) %>% 
+  dplyr::filter(caste %in% c("Male", "Queen") | sex == "Male")
+casteClimateFPplot$species <- factor(casteClimateFPplot$species, levels = casteEpithets)
+
+# proper labels
+caste_to_string <- as_labeller(c(`griseocollis` = "*B. griseocollis* (sexuals only)", `impatiens` = "*B. impatiens* (sexuals only)"))
+
+castePlots <- ggplot()+
+  geom_point(data = casteClimateFPplot, aes(x = yearGDD5, y = dayno, color = caste), alpha = 0.1)+
+  facet_wrap(vars(species), labeller = caste_to_string, ncol = 1)+
+  geom_line(data = castesFPplot, aes(x = yearGDD5, y = pred, linetype = response, color = model), linewidth = 1)+ 
+  facet_wrap(vars(species), labeller = caste_to_string, ncol = 1)+
+  scale_linetype_manual(labels = c("queen.onset" = "queen emergence", "male.onset" = "male onset", "male.end" = "male end"), values = c("queen.onset" = 1, "male.onset" = 2, "male.end" = 3))+
+  scale_color_manual(name = "predictor", labels = c("avgGDD5" = "average GDD", "yearGDD5" = "annual GDD"), values = c("avgGDD5" = "salmon4", "yearGDD5" = "salmon2", "Queen" = "darkseagreen3", "Male" = "slategray3"))+
+  theme_classic()+
+  theme(
+    axis.title.y = element_blank(),
+    plot.margin = unit(c(0,2,0,0), "cm")
+  )
+
+# putting both panels together
+allPlots <- fpPlots + castePlots +
+  plot_layout(widths = c(2, 1), guides = "collect", axes = "collect_x") +
+  plot_annotation(tag_levels = list(c("(a)", "(b)")), theme = theme(plot.margin = unit(c(0,0,0,0), "cm"))) &
+  labs(
+    y = "day of year",
+    x = "year GDD"
+  ) &
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_markdown(size = 10, hjust = 0),
+    axis.text = element_text(color = "black"),
+    legend.position = "none",
+    plot.tag = element_text(size = 10)
+  )
+
+allPlots
+
+ggsave("figs_tables/r_outputs/fig_03.png", allPlots, width = 18, height = 12, units = "cm")
+
+
+```
+
+```{r FIG S1 spp sample sizes}
+
+bumblesSampleSize <- bumblesFinal %>% 
+  mutate(
+    caste = case_when(
+      caste == "worker" ~ "Worker",
+      caste %in% c("", "Female") ~ "Unknown",
+      caste %!in% c("worker", "", "Female") ~ caste,
+    )
+  )
+
+bumblesSampleSize$species <- factor(bumblesSampleSize$species, levels = speciesByAbund$species)
+bumblesSampleSize$caste <- factor(bumblesSampleSize$caste, levels = c("Queen", "Worker", "Male", "Unknown"))
+
+bumbleProportions <- bumblesSampleSize %>% 
+  summarize(
+    n = n(),
+    .by = c(species, caste)
+    ) %>% 
+  group_by(species) %>% 
+  mutate(percent =( n / sum(n))*100)
+
+sampleSizesPlot <- ggplot(bumblesSampleSize)+ 
+  geom_bar(aes(x = species, fill = caste))+
+  scale_fill_manual(values = bumbleColorsCB)+
+  scale_x_discrete(labels = paste0("B. ", levels(bumblesSampleSize$species)))+
+  labs(
+    y = expression("number of occurrences")
+  )+
+  theme_classic()+
+  theme(
+    legend.position = "inside",
+    legend.justification.inside = c(1,1),
+    legend.position.inside = c(1,1),
+    axis.text = element_markdown(color = "black"),
+    axis.text.x = element_markdown(hjust = 1, angle = 30, face = "italic"),
+    axis.title.x = element_blank(),
+    plot.margin = unit(c(0,0,0,0), "cm")
+  )
+
+ggsave("figs_tables/r_outputs/fig_S01.png", sampleSizesPlot, width = 18, height = 12, units = "cm")
+
+```
+
+```{r FIG S2: Map of temperature and precipitation data}
+
+# creating dataframe for these maps
+climateMapData <- bumblesFinal %>% 
+  dplyr::select(latitude, longitude, coordinates, avgGDD5, avgWinterPrecip, avgSummerPrecip)
+
+# creating a map of average GDD values
+GDDmap <- basemap+
+  geom_point(data = climateMapData, aes(x = longitude, y = latitude, color = avgGDD5))+
+  scale_color_viridis_c(option = "inferno")+
+  labs(
+    color = ""
+  )+
+  guides(color = guide_colorbar(direction = "horizontal"))+
+  theme(
+    legend.position = "inside",
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.margin = unit(c(0,0,0,0), "cm"),
+    legend.key.width = unit(0.75, "cm")
+  )
+
+# creating a map of winter average precip values
+wPrecipmap <- basemap+
+  geom_point(data = climateMapData, aes(x = longitude, y = latitude, color = avgWinterPrecip))+
+  scale_color_viridis_c(option = "mako")+
+  labs(
+    color = ""
+  )+
+  guides(color = guide_colorbar(direction = "horizontal"))+
+  theme(
+    legend.position = "inside",
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.margin = unit(c(0,0,0,0), "cm"),
+    legend.key.width = unit(0.75, "cm")
+  )
+
+# creating a map of summer average precip values
+sPrecipmap <- basemap+
+  geom_point(data = climateMapData, aes(x = longitude, y = latitude, color = avgSummerPrecip))+
+  scale_color_viridis_c(option = "mako")+
+  labs(
+    color = ""
+  )+
+  guides(color = guide_colorbar(direction = "horizontal"))+
+  theme(
+    legend.position = "inside",
+    plot.margin = unit(c(0,0,0,0), "cm"),
+    legend.key.width = unit(0.75, "cm")
+  )
+
+# creating a patchwork plot of all 3 climate plots
+climateMaps <- GDDmap + wPrecipmap + sPrecipmap +
+  plot_layout(ncol = 1)+
+  plot_annotation(tag_levels = list(c("(a)", "(b)", "(c)")),
+                  theme = theme(plot.margin = unit(c(0,0,0,0), "cm")))&
+  theme(
+    plot.tag = element_text(size = 10),
+    legend.position = "inside",
+    legend.position.inside = c(1,0.15),
+    legend.justification.inside = c(1,0),
+    legend.title = element_text(hjust = 1),
+    legend.background = element_blank()
+  )
+
+climateMaps
+
+ggsave("figs_tables/r_outputs/fig_S02.png", climateMaps, width = 11, height = 24, units = "cm")
+
+```
+
+```{r FIG S3 all temperature response graphs, shows change in flight period too }
+
+# creating bumble dataset for plotting
+bumblesAllFPplot0 <- tibble(
+  species = NA,
+  yearGDD5 = NA,
+  avgGDD5 = NA,
+  response = NA,
+  pred = NA,
+  model = NA
+)
+
+for(i in 1:length(epithets)){
+  bumblesAllFPplot0 <- bumblesAllFPplot0 %>% 
+    add_row(get.newdata(epithets[i]))
+}
+bumblesAllFPplot <- bumblesAllFPplot0[-1,]
+bumblesAllFPplot$species <- factor(bumblesAllFPplot$species, levels = epithets)
+bumblesAllClimateFPplot <- bumblesFinal
+bumblesAllClimateFPplot$species <- factor(bumblesAllClimateFPplot$species, levels = epithets)
+
+to_string <- as_labeller(c(`auricomus` = "*B. auricomus*", `bimaculatus` = "*B. bimaculatus*", `borealis` = "*B. borealis*", `fervidus` = "*B. fervidus*", `fraternus` = "*B. fraternus*", `rufocinctus` = "*B. rufocinctus*", `sandersoni` = "*B. sandersoni*", `ternarius` = "*B. ternarius*", `terricola` = "*B. terricola*", `vagans` = "*B. vagans*", `perplexus` = "*B. perplexus*", `griseocollis` = "*B. griseocollis*", `pensylvanicus` = "*B. pensylvanicus*", `impatiens` = "*B. impatiens*"))
+
+fpAllPlots <- ggplot()+
+  geom_point(data = bumblesAllClimateFPplot, aes(x = yearGDD5, y = dayno), color = "gray80", alpha = 0.1)+
+  facet_wrap(vars(species), labeller = to_string)+
+  geom_line(data = bumblesAllFPplot, aes(x = yearGDD5, y = pred, linetype = response, color = model), linewidth = 1)+ 
+  facet_wrap(vars(species), labeller = to_string)+
+  scale_linetype_manual(values = c("onset" = 1, "end" = 3))+
+  scale_color_manual(name = "predictor", labels = c("avgGDD5" = "average GDD", "yearGDD5" = "year GDD", "1" = "null"), values = c("avgGDD5" = "salmon4", "yearGDD5" = "salmon2", "1" = "gray50"))+
+  labs(
+    x = "year GDD",
+    y = "day of year"
+  )+
+  theme_classic()+
+  theme(
+    plot.margin = unit(c(0,0,0,0), "cm"),
+    strip.text = element_markdown(size = 10, hjust = 0),
+    strip.background = element_blank(),
+    axis.text = element_text(color = "black"),
+    legend.position = "inside",
+    legend.position.inside = c(0.9,0.02),
+    legend.justification = c(1,0),
+    legend.box = "horizontal"
+  )
+
+ggsave("figs_tables/r_outputs/fig_S03.png", fpAllPlots, width = 18, height = 18, units = "cm")
+
+```
+
+```{r TABLES}
+
+# TABLE S1
+# creating a concatenated table of model selection info for each species
+onsetModels <- readRDS("outputs/script_04_pheno_drivers/onset_models.rds")
+endModels <- readRDS("outputs/script_04_pheno_drivers/end_models.rds")
+for(i in 1:nSpecies){
+  
+  print(epithets[i])
+  
+  if(i == 1){
+    onsetModelSelection <- as.data.frame(onsetModels[[i]]$anova) %>% 
+    add_column(species = epithets[i]) %>% 
+    rowid_to_column(var = "step1")
+  }else{
+    onsetModelSelection1 <- as.data.frame(onsetModels[[i]]$anova) %>% 
+    add_column(species = epithets[i]) %>% 
+    rowid_to_column(var = "step1")
+    
+    onsetModelSelection <- onsetModelSelection %>% 
+      rbind(onsetModelSelection1)
+  }
+
+}
+
+onsetModelSelection2 <- onsetModelSelection %>% 
+  group_by(species) %>% 
+  mutate(
+    dAIC = AIC-min(AIC),
+    species = paste("B.", species),
+    Step = substr(Step, 3, nchar(Step))
+  ) %>% 
+  mutate(across(where(is.numeric), round, digits = 2)) %>% 
+  relocate(species) %>% 
+  ungroup()
+
+# saving this table
+write.csv(onsetModelSelection2, "figs_tables/r_outputs/table_S01_onset.csv")
+
+# doing the same for the end
+# creating a concatenated table of model selection info for each species
+for(i in 1:nSpecies){
+  
+  print(epithets[i])
+  
+  if(i == 1){
+    endModelSelection <- as.data.frame(endModels[[i]]$anova) %>% 
+    add_column(species = epithets[i]) %>% 
+    rowid_to_column(var = "step1")
+  }else{
+    endModelSelection1 <- as.data.frame(endModels[[i]]$anova) %>% 
+    add_column(species = epithets[i]) %>% 
+    rowid_to_column(var = "step1")
+    
+    endModelSelection <- endModelSelection %>% 
+      rbind(endModelSelection1)
+  }
+
+}
+
+endModelSelection2 <- endModelSelection %>% 
+  group_by(species) %>% 
+  mutate(
+    dAIC = AIC-min(AIC),
+    species = paste("B.", species),
+    Step = substr(Step, 3, nchar(Step))
+  ) %>% 
+  mutate(across(where(is.numeric), round, digits = 2)) %>% 
+  relocate(species) %>% 
+  ungroup()
+
+# saving this table
+write.csv(endModelSelection2, "figs_tables/r_outputs/table_S01_end.csv")
+
+# TABLE S2
+# this table was made directly in word by having knowledge of the global onset and end models (day of year ~ average GDD + GDD differential + winter/summer average precip + winter/summer SPI) and subtracting the model terms that were removed during model selection (which can be found in table S1.)
+
+# TABLE S3
+# this table was made from the csv file "dAIC.csv" in "outputs/script_06_castes"
+
+# TABLE S4
+# coefficients of onset and end pheno driver models
+onsetTable0 <- read.csv("outputs/script_04_pheno_drivers/onset_SE.csv")
+onsetTable1 <- onsetTable0 %>% 
+  mutate(
+    estimate = paste0(round(estimate,2), "±", round(SE, 2))
+  ) %>% 
+  mutate(across(where(is.numeric), as.character)) %>% 
+  dplyr::select(-c(pvalue, tvalue, SE, CI95)) %>% 
+  pivot_wider(names_from = "predictor", values_from = "estimate") %>% 
+  rename_with(~paste0(.x, "_onset", recycle0 = TRUE), .cols = c(2:6))
+
+# doing the same for the end
+endTable0 <- read.csv("outputs/script_04_pheno_drivers/end_SE.csv")
+endTable1 <- endTable0 %>% 
+  mutate(
+    estimate = paste0(round(estimate,2), "±", round(SE, 2))
+  ) %>% 
+  mutate(across(where(is.numeric), as.character)) %>% 
+  dplyr::select(-c(pvalue, tvalue, SE, CI95)) %>% 
+  pivot_wider(names_from = "predictor", values_from = "estimate") %>% 
+  rename_with(~paste0(.x, "_end", recycle0 = TRUE), .cols = c(2:6))
+
+pheno_driver_table <- onsetTable1 %>% 
+  left_join(endTable1)
+
+# save this as a CSV
+write.csv(pheno_driver_table, "figs_tables/r_outputs/table_S04.csv")
+
+# TABLE S5
+tabS5 <- read.csv("outputs/script_05_fp_duration/delta_fp_duration.csv") %>% 
+  mutate(
+    est_onset = paste(scientific(estimate_onset, digits = 3), "±", scientific(SE_onset, digits = 3)),
+    est_end = paste(scientific(estimate_end, digits = 3), "±", scientific(SE_end, digits = 3)),
+    est_delta = paste(scientific(estimate_dFPD, digits = 3), "±", scientific(SE_dFPD, digits = 3))
+  ) %>% 
+  relocate(
+    species, term_onset, est_onset, term_end, est_end, est_delta
+  ) %>% 
+  dplyr::select(1:6)
+
+write.csv(tabS5, "figs_tables/r_outputs/table_S05.csv")
+
+# TABLE S6
+tabS6 <- read.csv("outputs/script_06_castes/gp_mfp_duration.csv") %>% 
+  mutate(
+    estSE_queen = paste(scientific(estimate_queen_onset, digits = 3), "±", scientific(SE_queen_onset, digits = 3)),
+    estSE_male_onset = paste(scientific(estimate_male_onset, digits = 3), "±", scientific(SE_male_onset, digits = 3)),
+    estSE_male_end = paste(scientific(estimate_male_end, digits = 3), "±", scientific(SE_male_end, digits = 3)),
+    estSE_growth = paste(scientific(deltaGP_est, digits = 3), "±", scientific(deltaGP_SE, digits = 3)),
+    estSE_male_per = paste(scientific(delta_male_est, digits = 3), "±", scientific(delta_male_SE, digits = 3))
+  ) %>% 
+  dplyr::select(species, term_queen_onset, estSE_queen, term_male_onset, estSE_male_onset, term_male_end, estSE_male_end, estSE_growth, estSE_male_per)
+
+write.csv(tabS6, "figs_tables/r_outputs/table_S06.csv")
+
+```
+
+```{r cleanup}
+
+gc()
+rm(list = ls())
+
+```
+
+
+

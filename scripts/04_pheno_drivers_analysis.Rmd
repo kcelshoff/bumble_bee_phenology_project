@@ -1,0 +1,352 @@
+---
+title: "04_pheno-drivers-analysis"
+author: "Kyle Elshoff"
+date: "2025-02-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# setting working directory (change root.dir to the name of the path you store the project folder under)
+knitr::opts_knit$set(root.dir = "C:/Users/Kyle/Desktop/BumbleBeePhenology2024")
+
+```
+
+```{r loading packages, functions, vectors}
+
+# packages to load
+packages <- c("tidyverse", "conflicted", "quantreg", "MuMIn", "car", "MASS", 
+              "jtools", "bbmle", "patchwork")
+# installing packages not yet installed
+installedPackages <- packages %in% rownames(installed.packages())
+if (any(installedPackages == FALSE)) {
+  install.packages(packages[!installedPackages])
+}
+# loading all packages
+invisible(lapply(packages, library, character.only = TRUE))
+
+# getting number of species in analysis
+nSpecies <- 14
+
+# creating an epithets list
+epithets <- c(
+  "auricomus", "bimaculatus", "borealis", "fervidus", "fraternus", "griseocollis",
+  "impatiens","pensylvanicus","perplexus","rufocinctus","sandersoni","ternarius",
+  "terricola","vagans"
+  )
+
+```
+
+```{r loading in the bumble bee data}
+
+# loading in final bumble bee occurrence dataset
+bumblesFinal <- read.csv("data/clean_data/bumbles_final.csv")
+
+```
+
+```{r running onset pheno drivers analysis}
+
+# in this analysis, we investigate the effects of temperature and winter precipitation on the onset date of bumble bee species
+
+# list to store the best models in
+onsetModels <- vector('list', nSpecies)
+names(onsetModels) <- epithets
+
+# function to split up the data by species, run the analysis for each species, store the information
+get.OnsetPhenoDrivers <- function(spEpithet){
+  # getting a df with only observations of the species in question
+  df <- bumblesFinal %>% 
+    dplyr::filter(species == spEpithet) %>% 
+    # selecting the variables we are interested in
+    # create GDD differential variable
+    mutate(
+      GDD5diff = yearGDD5-avgGDD5
+    ) %>% 
+    dplyr::select(dayno, avgGDD5, GDD5diff, avgWinterPrecip, winterSPI) %>% 
+    # standardize everything except for the response (dayno)
+    mutate(across(-dayno, scale))
+  
+  # create the global onset model from which to derive the final model
+  globalOnset <- rq(dayno~avgGDD5+GDD5diff+avgWinterPrecip+winterSPI, tau = 0.1,
+                    data = df, method = "br", na.action = "na.fail")
+  # print VIFs to check for collinearity
+  print(summ(globalOnset, vifs = T))
+  print(dredge(globalOnset, rank = "AIC"))
+  # save the best model to a list
+  onsetModels[["spEpithet"]] <- stepAIC(globalOnset, direction = "backward")
+
+}
+
+# function to extract model coefficients from the lowest AICc model for each species
+get.onsetCoef <- function(spEpithet){
+  # getting a df with only observations of the species in question
+  df <- bumblesFinal %>% 
+    dplyr::filter(species == spEpithet) %>% 
+    # selecting the variables we are interested in
+    # create GDD differential variable
+    mutate(
+      GDD5diff = yearGDD5-avgGDD5
+    ) %>% 
+    dplyr::select(dayno, avgGDD5, GDD5diff, avgWinterPrecip, winterSPI) %>% 
+    # standardize everything except for the response (dayno)
+    mutate(across(-dayno, scale))
+  
+  # create the global onset model from which to derive the final model
+  globalOnset <- rq(dayno~avgGDD5+GDD5diff+avgWinterPrecip+winterSPI, tau = 0.1,
+                    data = df, method = "br", na.action = "na.fail")
+  
+  # extracting the best model for each species in table format
+  # dredge retreives the same best model as stepAIC; we tested all cases
+  bestModel <- dredge(globalOnset) %>%
+    as.data.frame() %>%
+    dplyr::filter(delta == 0) %>%
+    mutate(
+      species = spEpithet
+    ) %>%
+    relocate(species) %>%
+    rename("intercept" = `(Intercept)`)
+}
+
+# table to hold the best model info for each species
+onsetCoefFinal <- data.frame("species" = NA, "intercept" = NA, "avgGDD5" = NA, 
+                             "avgWinterPrecip" = NA, "GDD5diff" = NA, 
+                             "winterSPI" = NA, "df" = NA, "logLik" = NA, 
+                             "AICc" = NA, "delta" = NA, "weight" = NA)
+
+# run get.onsetCoef, store models in list, coef in table, save list and table externally
+for(i in 1:nSpecies){
+  
+  # where am i
+  print(epithets[i])
+  # run the onset analysis
+  onsetModels[[i]] <- get.OnsetPhenoDrivers(spEpithet = epithets[i])
+  # get the best model in table form
+  bestModel <- get.onsetCoef(spEpithet = epithets[i])
+  # join these all together
+  onsetCoefFinal <- rbind(onsetCoefFinal, bestModel)
+  # take out the first NA row and save file
+  if(i == nSpecies){
+    onsetCoefFinal <- onsetCoefFinal %>%
+      drop_na(species)
+    # save table of coefficients
+    write.csv(onsetCoefFinal, "outputs/script_04_pheno_drivers/onset_coef.csv",
+              row.names = FALSE)
+    # save list of best models
+    saveRDS(onsetModels, file = "outputs/script_04_pheno_drivers/onset_models.rds")
+
+    # clean workspace
+    rm(bestModel)
+  }
+}
+
+
+# running nonparametric bootstraps to get SE for above coefficients
+# NOTE--the SE estimates that you get for the coefficients when you reproduce this analysis will differ slightly from the values presented in the paper because nonparametric bootstrapping is a random process and will generate slightly different values each time.
+
+# list in which to save the bootstrap summaries
+onsetSummaries <- vector('list', nSpecies)
+names(onsetSummaries) <- epithets
+
+# function to run bootstraps
+bootstrap.Onset <- function(spEpithet){
+  # running the bootstrap
+  modelSummary <- summary.rq(onsetModels[[spEpithet]], se = "boot", 
+                             bsmethod = "xy", R = 100*ceiling(100000/nrow(subset(bumblesFinal, species == spEpithet))))
+}
+
+# function which extracts coefficients, SE, t values, p values from the summaries
+get.OnsetSE <- function(spEpithet){
+  onsetSE <- as.data.frame(onsetSummaries[[spEpithet]][["coefficients"]]) %>% rownames_to_column( var = "predictor") %>% 
+    mutate(
+      species = spEpithet,
+      CI95 = 1.96*`Std. Error`
+    ) %>% 
+    relocate(species) %>% 
+    rename("estimate" = Value, "SE" = `Std. Error`, "tvalue" = `t value`,
+           "pvalue" = `Pr(>|t|)`)
+}
+
+# table to store coefficients and SE in
+onsetSEFinal <- data.frame("species" = NA, "predictor" = NA, "estimate" = NA, "SE" = NA, "tvalue" = NA, "pvalue" = NA, "CI95" = NA)
+# running bootstraps, extracting coef and SE, saving tables and list
+for(i in 1:nSpecies){
+  
+  # where am I
+  print(epithets[i])
+  # run bootstraps
+  onsetSummaries[[i]] <- bootstrap.Onset(epithets[i])
+  # get SE
+  onsetSE <- get.OnsetSE(epithets[i])
+  # put into table
+  onsetSEFinal <- rbind(onsetSEFinal, onsetSE) %>% 
+    drop_na()
+  
+  # saving table and RDS at end
+  if(i == nSpecies){
+    saveRDS(onsetSummaries, "outputs/script_04_pheno_drivers/onset_summaries.rds")
+    write.csv(onsetSEFinal, "outputs/script_04_pheno_drivers/onset_SE.csv", row.names = FALSE)
+    # clean up workspace
+    rm(onsetSE)
+  }
+}
+
+
+```
+
+```{r running end pheno drivers analysis}
+
+# in this analysis, we investigate the effects of temperature and summer precipitation on the end date of bumble bee species
+
+# list to store the best models in
+endModels <- vector('list', nSpecies)
+names(endModels) <- epithets
+
+# function to split up the data by species, run the analysis for each species, store the information
+get.EndPhenoDrivers <- function(spEpithet){
+  # getting a df with only observations of the species in question
+  df <- bumblesFinal %>% 
+    dplyr::filter(species == spEpithet) %>% 
+    # selecting the variables we are interested in
+    # create GDD differential variable
+    mutate(
+      GDD5diff = yearGDD5-avgGDD5
+    ) %>% 
+    dplyr::select(dayno, avgGDD5, GDD5diff, avgSummerPrecip, summerSPI) %>% 
+    # standardize everything except for the response (dayno)
+    mutate(across(-dayno, scale))
+  
+  # create the global onset model from which to derive the final model
+  globalEnd <- rq(dayno~avgGDD5+GDD5diff+avgSummerPrecip+summerSPI, tau = 0.9,
+                    data = df, method = "br", na.action = "na.fail")
+  # print VIFs to check for collinearity
+  print(summ(globalEnd, vifs = T))
+  print(dredge(globalEnd, rank = "AIC"))
+  # save the best model to a list
+  endModels[["spEpithet"]] <- stepAIC(globalEnd, direction = "backward")
+
+}
+
+# tables to store model coefficients in
+get.EndCoef <- function(spEpithet){
+  # getting a df with only observations of the species in question
+  df <- bumblesFinal %>% 
+    dplyr::filter(species == spEpithet) %>% 
+    # selecting the variables we are interested in
+    # create GDD differential variable
+    mutate(
+      GDD5diff = yearGDD5-avgGDD5
+    ) %>% 
+    dplyr::select(dayno, avgGDD5, GDD5diff, avgSummerPrecip, summerSPI) %>% 
+    # standardize everything except for the response (dayno)
+    mutate(across(-dayno, scale))
+  
+  # create the global onset model from which to derive the final model
+  globalEnd <- rq(dayno~avgGDD5+GDD5diff+avgSummerPrecip+summerSPI, tau = 0.9,
+                    data = df, method = "br", na.action = "na.fail")
+  
+  # extracting the best model for each species in table format
+  bestModel <- dredge(globalEnd) %>%
+    as.data.frame() %>%
+    dplyr::filter(delta == 0) %>%
+    mutate(
+      species = spEpithet
+    ) %>%
+    relocate(species) %>%
+    rename("intercept" = `(Intercept)`)
+}
+
+# table to hold the best model for each species
+endCoefFinal <- data.frame("species" = NA, "intercept" = NA, "avgGDD5" = NA, 
+                             "avgSummerPrecip" = NA, "GDD5diff" = NA, 
+                             "summerSPI" = NA, "df" = NA, "logLik" = NA, 
+                             "AICc" = NA, "delta" = NA, "weight" = NA)
+
+# running get.EndCoef, store models in list, coef in table, save list and table externally
+for(i in 1:nSpecies){
+  
+  # where am i
+  print(epithets[i])
+  # run the onset analysis
+  endModels[[i]] <- get.EndPhenoDrivers(spEpithet = epithets[i])
+  # get the best model in table form
+  bestModel <- get.EndCoef(spEpithet = epithets[i])
+  # join these all together
+  endCoefFinal <- rbind(endCoefFinal, bestModel)
+  # take out the first NA row and save file
+  if(i == nSpecies){
+    endCoefFinal <- endCoefFinal %>%
+      drop_na(species)
+    # save table of coefficients
+    write.csv(endCoefFinal, "outputs/script_04_pheno_drivers/end_coef.csv",
+              row.names = FALSE)
+    # save list of best models
+    saveRDS(endModels, file = "outputs/script_04_pheno_drivers/end_models.rds")
+    
+    # clean workspace
+    rm(bestModel)
+  }
+}
+
+
+# running nonparametric bootstraps to get SE for above coefficients:
+
+# list in which to save the bootstrap summaries
+endSummaries <- vector('list', nSpecies)
+names(endSummaries) <- epithets
+
+# function to run summaries
+bootstrap.End <- function(spEpithet){
+  # running the bootstrap
+  modelSummary <- summary.rq(endModels[[spEpithet]], se = "boot", 
+                             bsmethod = "xy", R = 100*ceiling(100000/nrow(subset(bumblesFinal, species == spEpithet))))
+  
+}
+
+# function which extracts coefficients, SE, t values, p values from the summaries
+get.EndSE <- function(spEpithet){
+  
+  endSE <- as.data.frame(endSummaries[[spEpithet]][["coefficients"]]) %>% rownames_to_column(var = "predictor") %>% 
+    mutate(
+      species = spEpithet,
+      CI95 = 1.96*`Std. Error`
+    ) %>% 
+    relocate(species) %>% 
+    rename("estimate" = Value, "SE" = `Std. Error`, "tvalue" = `t value`,
+           "pvalue" = `Pr(>|t|)`)
+  
+}
+
+# table to store coefficients and SE in
+endSEFinal <- data.frame("species" = NA, "predictor" = NA, "estimate" = NA, "SE" = NA, "tvalue" = NA, "pvalue" = NA, "CI95" = NA)
+# running bootstraps, extracting coef and SE, saving tables and list
+for(i in 1:nSpecies){
+  
+  # where am I
+  print(epithets[i])
+  # run bootstraps
+  endSummaries[[i]] <- bootstrap.End(epithets[i])
+  # get SE
+  endSE <- get.EndSE(epithets[i])
+  # put into table
+  endSEFinal <- rbind(endSEFinal, endSE) %>% 
+    drop_na()
+  
+  # saving table and RDS at end
+  if(i == nSpecies){
+    saveRDS(endSummaries, "outputs/script_04_pheno_drivers/end_summaries.rds")
+    write.csv(endSEFinal, "outputs/script_04_pheno_drivers/end_SE.csv", row.names = FALSE)
+    # clean up workspace
+    rm(endSE)
+  }
+}
+
+```
+
+```{r cleanup}
+
+gc()
+rm(list = ls())
+
+```
+
+#END OF DOCUMENT

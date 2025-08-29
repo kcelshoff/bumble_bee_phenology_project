@@ -1,0 +1,77 @@
+---
+title: "03_bumble+climate-data"
+author: "Kyle Elshoff"
+date: "2025-02-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# setting working directory (change root.dir to the name of the path you store the project folder under)
+knitr::opts_knit$set(root.dir = "C:/Users/Kyle/Desktop/BumbleBeePhenology2024")
+
+```
+
+```{r loading packages and functions}
+
+# packages to load
+packages <- c("tidyverse", "conflicted")
+
+# installing packages not yet installed
+installedPackages <- packages %in% rownames(installed.packages())
+if (any(installedPackages == FALSE)) {
+  install.packages(packages[!installedPackages])
+}
+
+# loading all packages
+invisible(lapply(packages, library, character.only = TRUE))
+
+# cleanup workspace
+rm(installedPackages)
+
+# creating a useful function that is the complement of  %in%
+"%!in%" <- function(x, y){
+  !('%in%'(x, y))
+}
+
+```
+
+```{r loading in datasets}
+
+# loading in bumblesFiltered
+bumblesFiltered <- read.csv("data/clean_data/bumbles_filtered.csv") %>% 
+  mutate(across(year, as.integer))
+
+# loading in climate data
+avgClimateData <- read.csv("data/clean_data/avg_climate.csv")
+yearClimateData <- read.csv("data/clean_data/year_climate.csv")
+
+# lengthening year climate data
+yearClimateLong <- yearClimateData %>% 
+  pivot_longer(cols = -(coordinates), names_to = c(".value", "year"), names_sep = "\\.") %>% 
+  mutate(across(year, as.integer)) %>% 
+  # making sure yearGDD matches avgGDD5
+  rename("yearGDD5" = yearGDD)
+
+```
+
+```{r joining the datasets}
+
+# creating the large bumble climate dataset (final)
+bumblesWithClimate <- bumblesFiltered %>% 
+  left_join(avgClimateData, by = "coordinates") %>% 
+  left_join(yearClimateLong, by = c("year", "coordinates")) %>% 
+  drop_na()
+# save this as a CSV
+write.csv(bumblesWithClimate, "data/clean_data/bumbles_final.csv", row.names = FALSE)
+
+```
+
+```{r cleanup}
+gc()
+rm(list = ls())
+
+```
+
+
+#END OF DOCUMENT

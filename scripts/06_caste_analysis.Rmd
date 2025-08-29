@@ -1,0 +1,266 @@
+---
+title: "06_caste-analyses"
+author: "Kyle Elshoff"
+date: "2025-04-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# setting working directory (change root.dir to the name of the path you store the project folder under)
+knitr::opts_knit$set(root.dir = "C:/Users/Kyle/Desktop/BumbleBeePhenology2024")
+
+```
+
+```{r loading packages, functions, vectors}
+
+# packages to load
+packages <- c("tidyverse", "conflicted", "quantreg", "car", "MASS", "bbmle", "scales")
+# installing packages not yet installed
+installedPackages <- packages %in% rownames(installed.packages())
+if (any(installedPackages == FALSE)) {
+  install.packages(packages[!installedPackages])
+}
+# loading all packages
+invisible(lapply(packages, library, character.only = TRUE))
+
+# getting number of species in analysis
+nSpecies <- 14
+
+# creating an epithets list
+epithets <- c(
+  "auricomus", "bimaculatus", "borealis", "fervidus", "fraternus", "griseocollis",
+  "impatiens","pensylvanicus","perplexus","rufocinctus","sandersoni","ternarius",
+  "terricola","vagans"
+  )
+# creating an epithets list
+casteEpithets <- c("griseocollis", "impatiens")
+
+```
+
+```{r loading in the bumble bee data}
+
+# loading in bumblesFinal
+bumblesFinal <- read.csv("data/clean_data/bumbles_final.csv")
+
+```
+
+```{r subsetting impatiens and griseocollis sexuals from the full dataset}
+
+# for griseocollis
+griseocollis <- bumblesFinal %>% 
+  dplyr::filter(species == "griseocollis") %>% 
+  dplyr::filter(caste == "Queen" | sex == "Male")
+
+# for impatiens
+impatiens <- bumblesFinal %>% 
+  dplyr::filter(species == "impatiens") %>% 
+  dplyr::filter(caste == "Queen" | sex == "Male")
+
+# saving these as CSVs
+write.csv(griseocollis, "data/clean_data/griseocollis_castes.csv", row.names = FALSE)
+write.csv(impatiens, "data/clean_data/impatiens_castes.csv", row.names = FALSE)
+
+```
+
+```{r creating a function to perform caste analyses}
+
+# creating lists to hold best temperature models for each species, caste, and response
+queenOnsetTempModel<- vector("list", 2)
+names(queenOnsetTempModel) <- casteEpithets
+maleOnsetTempModel<- vector("list", 2)
+names(maleOnsetTempModel) <- casteEpithets
+maleEndTempModel<- vector("list", 2)
+names(maleEndTempModel) <- casteEpithets
+
+# create function to extract best temp model
+get.CasteTempModel <- function(spEpithet, casteType, quantile){
+  # import data for a given species
+  df <- read.csv(paste0("data/clean_data/", spEpithet, "_castes.csv")) %>% 
+    dplyr::filter(caste == casteType) %>% 
+    dplyr::select(dayno, avgGDD5, yearGDD5)
+  # creating three models: yearGDD, avgGDD, null
+  m0 <- rq(dayno~1, tau = quantile, data = df, method = "br")
+  mAvgGDD <- rq(dayno~avgGDD5, tau = quantile, data = df, method = "br")
+  mYearGDD <- rq(dayno~yearGDD5, tau = quantile, data = df, method = "br")
+  # comparing the three models using AICc
+  dAICTable <- ICtab(m0, mAvgGDD, mYearGDD, type = "AIC") %>% 
+    as.data.frame() %>% 
+    rownames_to_column(var = "model") %>% 
+    # selecting model with lowest AICc
+    dplyr::filter(dAIC == 0)
+  # getting the last thing I need: name of the best model
+  return(get(dAICTable$model))
+}
+
+get.dAICTable <- function(spEpithet, casteType, quantile){
+  # import data for a given species
+  df <- read.csv(paste0("data/clean_data/", spEpithet, "_castes.csv")) %>% 
+    dplyr::filter(caste == casteType) %>% 
+    dplyr::select(dayno, avgGDD5, yearGDD5)
+  # creating three models: yearGDD, avgGDD, null
+  m0 <- rq(dayno~1, tau = quantile, data = df, method = "br")
+  mAvgGDD <- rq(dayno~avgGDD5, tau = quantile, data = df, method = "br")
+  mYearGDD <- rq(dayno~yearGDD5, tau = quantile, data = df, method = "br")
+  # comparing the three models using AICc
+  dAICTable <- ICtab(m0, mAvgGDD, mYearGDD, type = "AIC") %>% 
+    as.data.frame() %>% 
+    rownames_to_column(var = "model")
+}
+
+# getting a big table of dAIC info for all species and castes
+for(i in 1:length(casteEpithets)){
+  
+  queenDeltaAIC <- get.dAICTable(spEpithet = casteEpithets[i], casteType = "Queen", quantile = 0.5) %>% 
+    add_column(species = casteEpithets[i], response = "queen onset")
+  mOnsetDeltaAIC <- get.dAICTable(spEpithet = casteEpithets[i], casteType = "Male", quantile = 0.25) %>% 
+    add_column(species = casteEpithets[i], response = "male onset")
+  mEndDeltaAIC <- get.dAICTable(spEpithet = casteEpithets[i], casteType = "Male", quantile = 0.75) %>% 
+    add_column(species = casteEpithets[i], response = "male end")
+  
+  if(i == 1){
+    grisDeltaAIC <- queenDeltaAIC %>% 
+    rbind(mOnsetDeltaAIC) %>% 
+    rbind(mEndDeltaAIC)
+  }else{
+    impDeltaAIC <- queenDeltaAIC %>% 
+      rbind(mOnsetDeltaAIC) %>% 
+      rbind(mEndDeltaAIC)
+    
+    casteDeltaAIC <- grisDeltaAIC %>% 
+      rbind(impDeltaAIC)
+  }
+  
+}
+
+casteDeltaAIC1 <- casteDeltaAIC %>% 
+  relocate(species, response)
+
+write.csv(casteDeltaAIC1, "outputs/script_06_castes/dAIC.csv")
+
+# running the above for queen onset and male onset and end
+for(i in 1:length(casteEpithets)){
+  # where am I?
+  print(casteEpithets[i])
+  # run functions
+  queenOnsetBest <- get.CasteTempModel(spEpithet = casteEpithets[i], casteType = "Queen", quantile = 0.5)
+  maleOnsetBest <- get.CasteTempModel(spEpithet = casteEpithets[i], casteType = "Male", quantile = 0.25)
+  maleEndBest <- get.CasteTempModel(spEpithet = casteEpithets[i], casteType = "Male", quantile = 0.75)
+  # store these models in the respective lists
+  queenOnsetTempModel[[i]] <- queenOnsetBest
+  maleOnsetTempModel[[i]] <- maleOnsetBest
+  maleEndTempModel[[i]] <- maleEndBest
+  # clean up workspace
+  rm(queenOnsetBest, maleOnsetBest, maleEndBest)
+}
+
+# then save the above lists
+saveRDS(queenOnsetTempModel, "outputs/script_06_castes/queen_onset_temp_model.rds")
+saveRDS(maleOnsetTempModel, "outputs/script_06_castes/male_onset_temp_model.rds")
+saveRDS(maleEndTempModel, "outputs/script_06_castes/male_end_temp_model.rds")
+
+```
+
+```{r creating summaries of above models to get standard errors}
+
+# making lists to hold summaries
+queenOnsetSummary <- vector("list", length(casteEpithets))
+names(queenOnsetSummary) <- casteEpithets
+maleOnsetSummary <- vector("list", length(casteEpithets))
+names(maleOnsetSummary) <- casteEpithets
+maleEndSummary <- vector("list", length(casteEpithets))
+names(maleEndSummary) <- casteEpithets
+
+# making a function to extract coefficients from summaries
+get.SE <- function(modelCoefficients){
+  df <- modelCoefficients %>% 
+    as.data.frame %>% 
+    rownames_to_column(var = "term") %>% 
+    rename("estimate" = Value, "SE" = `Std. Error`, "tvalue" = `t value`, "pvalue" = `Pr(>|t|)`) %>% 
+    mutate(
+      species = casteEpithets[i]
+    ) %>% 
+    relocate(species)
+}
+
+# making tables to hold coefficients/SE
+queenOnsetSEFinal <- data.frame("species" = NA, "term" = NA, "estimate" = NA, "SE" = NA, "tvalue" = NA, "pvalue" = NA)
+maleOnsetSEFinal <- data.frame("species" = NA, "term" = NA, "estimate" = NA, "SE" = NA, "tvalue" = NA, "pvalue" = NA)
+maleEndSEFinal <- data.frame("species" = NA, "term" = NA, "estimate" = NA, "SE" = NA, "tvalue" = NA, "pvalue" = NA)
+
+# running summaries of the above models and extracting coefficients, SE
+for(i in 1:length(casteEpithets)){
+  # where am I?
+  print(casteEpithets[i])
+  # putting the summaries in the lists
+  print("queen onset")
+  queenOnsetSummary[[i]] <- summary.rq(queenOnsetTempModel[[i]], se = "boot", 
+                                      bsmethod = "xy", R = 100000)
+  print("male onset")
+  maleOnsetSummary[[i]] <- summary.rq(maleOnsetTempModel[[i]], se = "boot",
+                             bsmethod = "xy", R = 100000)
+  print("male end")
+  maleEndSummary[[i]] <- summary.rq(maleEndTempModel[[i]], se = "boot",
+                             bsmethod = "xy", R = 100000)
+  
+  # taking the coefficient and SE info from the list, putting it in tables
+  queenOnsetSE <- get.SE(queenOnsetSummary[[i]]$coefficients)
+  maleOnsetSE <- get.SE(maleOnsetSummary[[i]]$coefficients)
+  maleEndSE <- get.SE(maleEndSummary[[i]]$coefficients)
+  
+  # add these to the final dataframes
+  queenOnsetSEFinal <- queenOnsetSEFinal %>% 
+    rbind(queenOnsetSE) %>% 
+    drop_na()
+  maleOnsetSEFinal <- maleOnsetSEFinal %>% 
+    rbind(maleOnsetSE) %>% 
+    drop_na()
+  maleEndSEFinal <- maleEndSEFinal %>% 
+    rbind(maleEndSE) %>% 
+    drop_na()
+  
+}
+
+# saving all of the things I have created
+saveRDS(queenOnsetSummary, "outputs/script_06_castes/queen_onset_summary.rds")
+saveRDS(maleOnsetSummary, "outputs/script_06_castes/male_onset_summary.rds")
+saveRDS(maleEndSummary, "outputs/script_06_castes/male_end_summary.rds")
+write.csv(queenOnsetSEFinal, "outputs/script_06_castes/queen_onset_SE_final.csv", row.names = FALSE)
+write.csv(maleOnsetSEFinal, "outputs/script_06_castes/male_onset_SE_final.csv", row.names = FALSE)
+write.csv(maleEndSEFinal, "outputs/script_06_castes/male_end_SE_final.csv", row.names = FALSE)
+
+```
+
+```{r calculating changes in delta growth period and male flight period}
+
+castesSEFinal <- queenOnsetSEFinal %>% 
+  rbind(maleOnsetSEFinal) %>% 
+  rbind(maleEndSEFinal) %>% 
+  mutate(
+    response = c(rep("queen_onset", 4), rep("male_onset", 4), rep("male_end", 4))
+  ) %>% 
+  dplyr::filter(term != "(Intercept)") %>% 
+  dplyr::select(-c(tvalue, pvalue)) %>% 
+  pivot_wider(names_from = response, values_from = c("term", "estimate", "SE")) %>% 
+  mutate(
+    # change in growth period
+    deltaGP_est = estimate_male_onset-estimate_queen_onset,
+    deltaGP_SE = sqrt((SE_male_onset)^2+(SE_queen_onset)^2),
+    # change in male flight period (reproductive period)
+    delta_male_est = estimate_male_end-estimate_male_onset,
+    delta_male_SE = sqrt((SE_male_onset)^2+(SE_male_onset)^2)
+  )
+
+write.csv(castesSEFinal, "outputs/script_06_castes/gp_mfp_duration.csv")
+
+```
+
+```{r cleanup}
+
+gc()
+rm(list = ls())
+
+```
+
+
+

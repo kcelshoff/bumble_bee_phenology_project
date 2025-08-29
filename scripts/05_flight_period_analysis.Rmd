@@ -1,0 +1,201 @@
+---
+title: "05_flight-period-analysis"
+author: "Kyle Elshoff"
+date: "2025-02-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# setting working directory (change root.dir to the name of the path you store the project folder under)
+knitr::opts_knit$set(root.dir = "C:/Users/Kyle/Desktop/BumbleBeePhenology2024")
+
+```
+
+```{r loading packages, functions, vectors}
+
+# packages to load
+packages <- c("tidyverse", "conflicted", "quantreg", "MuMIn", "car", "MASS", 
+              "jtools", "bbmle", "scales")
+# installing packages not yet installed
+installedPackages <- packages %in% rownames(installed.packages())
+if (any(installedPackages == FALSE)) {
+  install.packages(packages[!installedPackages])
+}
+# loading all packages
+invisible(lapply(packages, library, character.only = TRUE))
+
+# getting number of species in analysis
+nSpecies <- 14
+
+# creating an epithets list
+epithets <- c(
+  "auricomus", "bimaculatus", "borealis", "fervidus", "fraternus", "griseocollis",
+  "impatiens","pensylvanicus","perplexus","rufocinctus","sandersoni","ternarius",
+  "terricola","vagans"
+  )
+
+```
+
+```{r loading in the bumble bee data}
+
+# loading in final bumble bee dataset
+bumblesFinal <- read.csv("data/clean_data/bumbles_final.csv")
+
+```
+
+```{r create and select temperature-only models}
+
+# In this chunk, we take the information gleaned from the first set of analyses (04_pheno-drivers-analysis) about the best temperature models for FPO and FPE for each species and essentially select only those models. We also have to construct new models for those species whose best models contained avgGDD and GDDdiff; the new models contain yearGDD, which combines information from both of those measures into one measure.
+
+# NOTE--we select these models through AIC but this results in the final models selected having the best temperature predictors from the pheno driver models--ie., there is no inconsistencies
+
+# creating a list to store best onset temp models
+onsetTempModel <- vector("list", nSpecies)
+names(onsetTempModel) <- epithets
+# doing the same for end
+endTempModel <- vector("list", nSpecies)
+names(endTempModel) <- epithets
+
+# create function to extract best temp model
+get.TempModel <- function(spEpithet, quantile){
+  # import data for a given species
+  df <- bumblesFinal %>% 
+    dplyr::filter(species == spEpithet) %>% 
+    dplyr::select(dayno, avgGDD5, yearGDD5)
+  # creating three models: yearGDD, avgGDD, null
+  m0 <- rq(dayno~1, tau = quantile, data = df, method = "br")
+  mAvgGDD <- rq(dayno~avgGDD5, tau = quantile, data = df, method = "br")
+  mYearGDD <- rq(dayno~yearGDD5, tau = quantile, data = df, method = "br")
+  # comparing the three models using AIC
+  dAICTable <- ICtab(m0, mAvgGDD, mYearGDD) %>% 
+    as.data.frame() %>% 
+    rownames_to_column(var = "model") %>% 
+    # selecting model with lowest AIC
+    dplyr::filter(dAIC == 0)
+  # gettin the last thing I need: name of the best model
+  return(get(dAICTable$model))
+}
+
+# running the above for onset and end
+for(i in 1:nSpecies){
+  # where am I?
+  print(epithets[i])
+  # run functions
+  onsetBest <- get.TempModel(spEpithet = epithets[i], quantile = 0.1)
+  endBest <- get.TempModel(spEpithet = epithets[i], quantile = 0.9)
+  # store these models in the respective lists
+  onsetTempModel[[i]] <- onsetBest
+  endTempModel[[i]] <- endBest
+  # clean up workspace
+  rm(onsetBest, endBest)
+}
+
+# then save the above lists
+saveRDS(onsetTempModel, "outputs/script_05_fp_duration/onset_temp_model.rds")
+saveRDS(endTempModel, "outputs/script_05_fp_duration/end_temp_model.rds")
+
+# making lists to hold summaries
+onsetTempSummary <- vector("list", nSpecies)
+names(onsetTempSummary) <- epithets
+endTempSummary <- vector("list", nSpecies)
+names(endTempSummary) <- epithets
+
+# making a function to extract coefficients from summaries
+get.TempSE <- function(modelCoefficients){
+  df <- modelCoefficients %>% 
+    as.data.frame %>% 
+    rownames_to_column(var = "term") %>% 
+    rename("estimate" = Value, "SE" = `Std. Error`, "tvalue" = `t value`, "pvalue" = `Pr(>|t|)`) %>% 
+    mutate(
+      species = epithets[i]
+    ) %>% 
+    relocate(species)
+}
+
+# making tables to hold coefficients/SE
+onsetTempSEFinal <- data.frame("species" = NA, "term" = NA, "estimate" = NA, "SE" = NA, "tvalue" = NA, "pvalue" = NA)
+endTempSEFinal <- data.frame("species" = NA, "term" = NA, "estimate" = NA, "SE" = NA, "tvalue" = NA, "pvalue" = NA)
+
+# running summaries of the above models and extracting coefficients, SE
+for(i in 1:nSpecies){
+  # where am I?
+  print(epithets[i])
+  # putting the summaries in the lists
+  onsetTempSummary[[i]] <- summary.rq(onsetTempModel[[i]], se = "boot", 
+                                      bsmethod = "xy", 
+                                      R = 100*ceiling(
+                                        100000/nrow(
+                                          subset(bumblesFinal,
+                                                 species == epithets[i])
+                                          )
+                                        )
+                                      )
+  
+  endTempSummary[[i]] <- summary.rq(endTempModel[[i]], se = "boot",
+                             bsmethod = "xy", R = 100*ceiling(100000/nrow(subset(bumblesFinal,
+                                                                                 species == epithets[i]))))
+  
+  # taking the coefficient and SE info from the list, putting it in tables
+  onsetTempSE <- get.TempSE(onsetTempSummary[[i]]$coefficients)
+  endTempSE <- get.TempSE(endTempSummary[[i]]$coefficients)
+  
+  # add these to the final dataframes
+  onsetTempSEFinal <- onsetTempSEFinal %>% 
+    rbind(onsetTempSE) %>% 
+    drop_na()
+  endTempSEFinal <- endTempSEFinal %>% 
+    rbind(endTempSE) %>% 
+    drop_na()
+  
+  # saving all of the things I have created
+  saveRDS(onsetTempSummary, "outputs/script_05_fp_duration/onset_temp_summary.rds")
+  saveRDS(endTempSummary, "outputs/script_05_fp_duration/end_temp_summary.rds")
+  write.csv(onsetTempSEFinal, "outputs/script_05_fp_duration/onset_temp_SE_final.csv", row.names = FALSE)
+  write.csv(endTempSEFinal, "outputs/script_05_fp_duration/end_temp_SE_final.csv", row.names = FALSE)
+  
+}
+
+```
+
+```{r calculate delta FPD from slopes of best temperature models}
+
+# delta FPD is the change in the duration of the flight period as GDD increase (i.e. conditions become warmer, growing season lengthens). It is simply change in FPE - change in FPO. We can also calculate the SE of delta FPD using the formaula for standard error of a difference, sqrt((SE1)^2+(SE2)^2).
+
+onsetTempSEFinal <- read.csv("outputs/script_05_fp_duration/onset_temp_SE_final.csv")
+endTempSEFinal <- read.csv("outputs/script_05_fp_duration/end_temp_SE_final.csv")
+
+# creating data frame with all responses and species
+deltaFPD <- onsetTempSEFinal %>% 
+  add_row(endTempSEFinal) %>% 
+  # selecting only columns we need
+  dplyr::select(species, term, estimate, SE) %>% 
+  # removing intercept estimates
+  dplyr::filter(term != "(Intercept)") %>% 
+  # adding a row for fraternus because GDD has no effect on its FPE
+  add_row(species = "fraternus", term = "null", estimate = 0, SE = 0) %>% 
+  mutate(
+    # code responses by whether they are onset or end
+    response = c(rep("onset", 14), rep("end", 14))
+  ) %>% 
+  # making it wide to make the calculations easier
+  pivot_wider(names_from = response, values_from = c("term", "estimate", "SE")) %>% 
+  # calculating dFPD and standard error
+  mutate(
+    estimate_dFPD = estimate_end-estimate_onset,
+    SE_dFPD = sqrt((SE_onset)^2+(SE_end)^2),
+  )
+
+# saving this table as a CSV
+write.csv(deltaFPD, "outputs/script_05_fp_duration/delta_fp_duration.csv", row.names = FALSE)
+
+```
+
+```{r cleanup}
+
+gc()
+rm(list = ls())
+
+```
+
+#END OF DOCUMENT

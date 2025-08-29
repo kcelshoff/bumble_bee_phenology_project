@@ -1,0 +1,92 @@
+---
+title: "Cleaning and Filtering Bumble Bee Occurrence Data"
+author: "Kyle Elshoff"
+date: "2025-02-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# setting working directory (change root.dir to the name of the path you store the project folder under)
+knitr::opts_knit$set(root.dir = "C:/Users/Kyle/Desktop/BumbleBeePhenology2024")
+
+```
+
+```{r loading packages}
+
+# packages to load
+packages <- c("tidyverse", "conflicted")
+# installing packages not yet installed
+installedPackages <- packages %in% rownames(installed.packages())
+if (any(installedPackages == FALSE)) {
+  install.packages(packages[!installedPackages])
+}
+# loading all packages
+invisible(lapply(packages, library, character.only = TRUE))
+
+```
+
+```{r creating useful vectors}
+
+# list of the specific epithets of the study species
+epithets <- c("auricomus", "bimaculatus", "borealis", "fervidus", "fraternus", "griseocollis", "impatiens", "pensylvanicus", "perplexus", "rufocinctus", "sandersoni", "ternarius", "terricola", "vagans")
+
+```
+
+```{r filtering and cleaning raw occurrence data}
+
+# load raw data
+bumblesRaw <- read.csv("data/raw_data/BBNA.09.16.2024.share.csv", fileEncoding = "latin1")
+
+# clean occurrence data, but not filtering for range/species/time
+bumblesCleaned <- bumblesRaw %>% 
+  # reclassing important columns
+  mutate(across(longitude, as.numeric)) %>% 
+  mutate(across(c(dayno, month), as.integer)) %>% 
+  mutate(across(date, mdy)) %>% 
+  # these operations turned multiple rows into NAs, so let's remove those rows (as well as other rows missing critical data)
+  drop_na(species, latitude, longitude, dayno, year, observers) %>% 
+  # correcting incorrect longitudes (typos; locality information indicates that all longitudes should be negative)
+  mutate(
+    longitude = case_when(
+      sign(longitude)==1 ~ -1*(longitude),
+      .default = longitude
+    )
+  ) %>% 
+  # removing datapoint at equator
+  dplyr::filter(longitude < 0) %>% 
+  # now, creating rounded coordinates to remove (near) duplicate observations
+  mutate(
+    coordinatesRound = paste0(round(latitude, 1), ", ", round(longitude, 1))
+  ) %>% 
+  # duplicate removal criterion: only keep observations that have a distinct combination of species, sex, observer, date, and rounded coordinates
+  distinct(
+    species, sex, date, observers, coordinatesRound, .keep_all = TRUE
+  )
+
+# now filtering the cleaned occurrence data to the scope of our study
+# our study imposes spatial, temporal, and taxonomic bounds on the occurrences used. Applying those filters here:
+bumblesFiltered <- bumblesCleaned %>% 
+  # spatial bounds
+  dplyr::filter(latitude < 52.5 & latitude > 27.5 & longitude > -95) %>% 
+  # temporal bounds
+  dplyr::filter(year < 2024 & year > 1979) %>% 
+  # taxonomic bounds
+  dplyr::filter(species %in% epithets) %>% 
+  # keeping only the columns we need
+  dplyr::select(BBNA.code, species, sex, caste, latitude, longitude, year, dayno, observers, coordinates)
+
+# saving the above dataframe as a CSV
+write.csv(bumblesFiltered, "data/clean_data/bumbles_filtered.csv", row.names = F)
+
+```
+
+```{r cleanup}
+
+gc()
+rm(list = ls())
+
+```
+
+#END OF DOCUMENT
+

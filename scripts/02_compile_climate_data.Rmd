@@ -1,0 +1,521 @@
+---
+title: "Compiling Climatic Data"
+author: "Kyle Elshoff"
+date: "2025-02-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# setting working directory (change root.dir to the name of the path you store the project folder under)
+knitr::opts_knit$set(root.dir = "C:/Users/Kyle/Desktop/BumbleBeePhenology2024")
+
+```
+
+```{r loading packages, functions, etc.}
+
+# packages to load
+packages <- c("tidyverse", "conflicted", "daymetr", "SPEI")
+
+# installing packages not yet installed
+installedPackages <- packages %in% rownames(installed.packages())
+if (any(installedPackages == FALSE)) {
+  install.packages(packages[!installedPackages])
+}
+
+# loading all packages
+invisible(lapply(packages, library, character.only = TRUE))
+
+# cleanup workspace
+rm(installedPackages)
+
+# creating a useful function that is the complement of  %in%
+"%!in%" <- function(x, y){
+  !('%in%'(x, y))
+}
+
+```
+
+```{r creating and saving csv of unique coordinates}
+
+# loading in bumblesFiltered
+bumblesFiltered <- read.csv("data/clean_data/bumbles_filtered.csv")
+
+# creating a dataframe of unique coordinates
+unicoords <- bumblesFiltered %>% 
+  distinct(coordinates) %>% 
+  separate_wider_delim(coordinates, delim = ", ",
+                       names = c("latitude", "longitude")) %>% 
+  rowid_to_column(var = "site") %>% 
+  mutate(across(everything(), as.numeric))
+
+# saving to outputs
+write.csv(unicoords, "outputs/script_02/unicoords.csv", row.names = FALSE)
+
+```
+
+```{r downloading raw climate data}
+
+# creating function to download daily climate data for each unique coordinate from 1980-2023
+download.Climate <- function(filename){
+  
+  # download all of the climate data
+  df <- download_daymet_batch(
+    file_location = filename, start = 1980, end = 2023, internal = TRUE, simplify = TRUE
+  ) %>% 
+    mutate(yday = as.integer(yday)) %>% 
+    drop_na() %>% 
+    pivot_wider(names_from = measurement, values_from = value)
+  
+}
+
+# tells you how long to run the for loop
+nCoordFile <- round(nrow(unicoords)/100,0)
+
+# now running the code in a for loop
+for(i in 1:nCoordFile){
+  
+  # where are we?
+  print(i)
+  
+  # getting 100 rows per df
+  if(i < nCoordFile+1){
+    # extract a subset of the unicoords into a single file
+    df <- unicoords %>% 
+      slice((100*i-99):(100*i))
+  }else{
+    # for this one, we need less than 100 rows (getting to the end of the file)
+    df <- unicoords %>% 
+      slice((100*i-99):(nrow(unicoords)))
+  }
+  
+  # create filename for file we are about to save
+  filename <- paste0("outputs/script_02/unicoords", i, ".csv")
+  
+  # save df as a file, temporarily, and remove df
+  write.csv(df, filename, row.names = F)
+  rm(df)
+  
+  # using file to download the daymet data
+  df <- download.Climate(filename = filename)
+  
+  # save the file
+  # NOTE: these files take up a lot of space (hundreds of GB) so I have to store them on an external drive, which is why I have written an absolute path here. When running this code, rename the first argument of paste0() to wherever you have space to store these files
+  write.csv(df, paste0("D:/bumblePhenoProject2024/outputs/script_02/climDataRaw/climDataRaw", i, ".csv"))
+  
+  # clean up: remove df, filename, and temporary unicoords file
+  file.remove(filename)
+  rm(df, filename, unicoords)
+  
+}
+
+# the climDataRaw files we just created contain, among other things, precipitation and min and max temp data for every day of every year from 1980 t0 2023 for each unique bumble bee occurrence site. We derive all the climate data used in this project from these files.
+
+```
+
+```{r extracting GDD data}
+
+# now, we are going to extract GDD data from all of the "climDataRaw" files we just created
+# creating a function to extract GDD data from a given climDataRaw file
+get.GDD <- function(filename){
+  
+  # first, read in the file
+  df <- read.csv(filename, row.names = 1)
+  
+  # then, extract base 5C GDD for each study year at each coordinate
+  ygdd <- df %>% 
+    mutate(
+      tmean = (tmax..deg.c. + tmin..deg.c.)/2,
+      gdd5base = if_else(tmean < 5, 0, tmean - 5)
+      ) %>%
+    select(-c(tmax..deg.c., tmin..deg.c., tmean)) %>%
+    group_by(latitude, longitude, year) %>% 
+    summarise(yearGDD5 = sum(gdd5base)) %>% 
+    ungroup()
+  
+  # from the ygdd values, get long term average GDD values for each coordinate
+  agdd <- ygdd %>% 
+    group_by(latitude, longitude) %>%
+    summarise(avgGDD5 = mean(yearGDD5)) %>% 
+    ungroup()
+  
+  # assign these dataframes to actual objects
+  assign("avgGDD", agdd, envir = .GlobalEnv)
+  assign("yearGDD", ygdd, envir = .GlobalEnv)
+  
+}
+
+for(i in 1:nCoordFile){
+  
+  # where am I?
+  print(i)
+  # create filename
+  filename <- paste0("D:/bumblePhenoProject2024/outputs/script_02/climDataRaw/climDataRaw", i, ".csv")
+  # extract GDD data for above filename
+  get.GDD(filename = filename)
+  # prepping the final dataframe with the dfs from the first iteration
+  if(i == 1){
+    fullYearlyGDD <- yearGDD
+    fullAvgGDD <- avgGDD
+  # telling it what to do once it gets to the last set of dfs
+  }else if(i == nCoordFile){
+    # updates fullYearlyGDD
+    fullYearlyGDD <- rbind(fullYearlyGDD, yearGDD) %>% 
+      mutate(across(everything(), as.numeric)) %>%
+      drop_na() %>% 
+      pivot_wider(
+        id_cols = c(latitude, longitude), names_from = year, values_from = yearGDD5
+        ) %>% 
+      rename_with(~ paste0("yearGDD5.", .x), .cols = c(3:46))
+
+    # updates fullAvgGDD
+    fullAvgGDD <- rbind(fullAvgGDD, avgGDD) %>%
+      mutate(across(everything(), as.numeric)) %>%
+      drop_na()
+    
+    # writing the files to CSVs
+    write.csv(fullYearlyGDD, "outputs/script_02/fullYearlyGDD.csv", row.names = FALSE)
+    write.csv(fullAvgGDD, "outputs/script_02/fullAvgGDD.csv", row.names = FALSE)
+    
+  # telling it what to do with files 2, 3, 4, 5, etc.
+  }else{
+    fullYearlyGDD <- rbind(fullYearlyGDD, yearGDD)
+    fullAvgGDD <- rbind(fullAvgGDD, avgGDD)
+  }
+}
+
+```
+
+```{r extracting summer precipitation data}
+
+# first, need to determine if the four hottest months are the same across all coordinates
+# we will extract precipitation information from this "hottest third" of the year
+# create a function to extract monthly temps for each site
+get.monthTemps <- function(filename){
+  
+  df <- read.csv(filename, row.names = 1) %>% 
+    # selecting columns I want
+    select(latitude,longitude,year,yday,tmin..deg.c.,tmax..deg.c.) %>% 
+    # formatting months and temperatures
+    mutate(
+      month = month(parse_date_time(paste(year, yday, sep = "-"), orders = "%Y-%j"), label = TRUE, abbr = TRUE),
+      tmean = (tmin..deg.c.+tmax..deg.c.)/2
+    ) %>% 
+    mutate(across(c(latitude, longitude), as.numeric)) %>% 
+    group_by(latitude, longitude, month) %>% 
+    # getting the average temperatures of each month at each site
+      summarize(avgTemp = mean(tmean)) %>%
+      ungroup() %>% 
+      pivot_wider(names_from = month, names_prefix = "avgTemp", values_from = avgTemp) %>% 
+    select(-contains("NA"))
+  
+}
+
+# read in and write all of these files
+for(i in 1:3){
+  
+  # where am i?
+  print(i)
+  # create filename
+  filename <- paste0("D:/bumblePhenoProject2024/outputs/script_02/climDataRaw/climDataRaw", i, ".csv")
+  # assign function to an object
+  df <- get.monthTemps(filename = filename)
+  # save CSV
+  write.csv(df, paste0("D:/bumblePhenoProject2024/outputs/script_02/monthTemps/monthTemp", i, ".csv"), row.names = FALSE)
+  # clean workspace
+  rm(df, filename)
+    
+}
+
+# now we have average monthly temperature data for all sites. time to read this in and extract the warmest 4 months (they turn out to all be the same)
+
+# create giant dataframe of all sites
+monthTempNames <- list.files("D:/bumblePhenoProject2024/outputs/script_02/monthTemps")
+monthTempList <- lapply(paste0("D:/bumblePhenoProject2024/outputs/script_02/monthTemps/", monthTempNames), read.csv)
+monthTemps <- do.call(rbind, monthTempList) %>% 
+  pivot_longer(cols = c(3:14), names_to = "month", names_prefix = "avgTemp", values_to = "avgTemp") %>% 
+  drop_na()
+# clean workspace
+rm(monthTempNames, monthTempList)
+# get 4 warmest months
+warmestMonths <- monthTemps %>%
+  group_by(latitude,longitude) %>%
+  mutate(monthRank = rank(avgTemp)) %>% 
+  dplyr::filter(monthRank %in% c(9:12)) %>%
+  ungroup() %>%
+  distinct(month) %>% 
+  pull(month)
+# they are june, july, august, and september!
+
+# now, creating a function to extract the average and yearly accumulated summer precipitation and SPI for each site/year combo
+get.SummerPrecip <- function(file){
+  
+  # first, read in the file
+  df <- read.csv(filename, row.names = 1)
+  # extract precip totals in four warmest months for every site-year combo
+  avgPrecip <- df %>% 
+    mutate(
+      month = month(parse_date_time(paste(year, yday, sep = "-"), orders = "%Y-%j"))
+      ) %>%
+    select(latitude, longitude, year, month, yday, prcp..mm.day.) %>%
+    # the four hottest months
+    dplyr::filter(month %in% c(6,7,8,9)) %>% 
+    summarise(summerPrecip = sum(prcp..mm.day.), .by = c(latitude, longitude, year)) %>% 
+    summarise(avgSummerPrecip = mean(summerPrecip), .by = c(latitude, longitude))
+  
+  # getting SPI data
+  spi1 <- df %>%
+    mutate(
+      month = month(parse_date_time(paste(year, yday, sep = "-"), orders = "%Y-%j"))
+      ) %>%
+    select(latitude, longitude, year, month, yday, prcp..mm.day.) %>% 
+    dplyr::filter(!is.na(year)) %>% 
+    summarize(monthPrecip = sum(prcp..mm.day.), .by = c(latitude, longitude, year, month)) %>% 
+    pivot_wider(names_from = c(latitude, longitude), values_from = monthPrecip) 
+  spi2 <- spi1 %>% 
+    select(-c(year, month)) %>% 
+    as.matrix() %>% 
+    # using the SPI function. it takes a matrix and assume it is a monthly precipitation time series over your period of interest. scale is 4 because I want it to calculate precipitation accumulation over four month periods (so I can get jun-sep precip)
+    spi(scale = 4, distribution = "Gamma", na.rm = T)
+  SPI3 <- as.data.frame(spi2$fitted) %>% 
+    add_column(spi1$year, spi1$month, .before = 1) %>% 
+    rename("year" = "spi1$year", "month" = "spi1$month") %>% 
+    # keeping only september because this value contains the accumulated precipitation for itself and the previous three month (back to july)--this is the summer precip we are interested in.
+    dplyr::filter(month == 9) %>% 
+    pivot_longer(cols = !c(year, month), names_to = c("latitude", "longitude"), names_sep = "_", values_to = "SepSPI") %>%
+    select(-month)
+  
+  # assign the objects I want to the global environment
+  assign("summerSPI3", SPI3, envir = .GlobalEnv)
+  assign("avgSummerPrecip", avgPrecip, envir = .GlobalEnv)
+  
+}
+
+# now running the function above to get two dataframes, one for avgSummerPrecip and one for summerSPI
+fullAvgSummerPrecip <- data.frame("latitude" = NA, "longitude" = NA, "avgSummerPrecip" = NA)
+fullYearlySummerPrecip <- data.frame("year" = NA, "latitude" = NA, "longitude" = NA, "SepSPI" = NA)
+
+for(i in 1:nCoordFile){
+  
+  # where am i?
+  print(i)
+  # name file
+  filename <- paste0("D:/bumblePhenoProject2024/outputs/script_02/climDataRaw/climDataRaw", i, ".csv")
+  # run function
+  get.SummerPrecip(file = filename)
+
+  # getting everything into dataframes
+  # average summer precipitation
+  fullAvgSummerPrecip <- rbind(fullAvgSummerPrecip, avgSummerPrecip)
+  # summerSPI
+  fullYearlySummerPrecip <- rbind(fullYearlySummerPrecip, summerSPI3)
+  
+  # writing the files at the very end
+  if(i == nCoordFile){
+    # getting rid of first NA row
+    fullAvgSummerPrecip <- fullAvgSummerPrecip %>% 
+      drop_na()
+    
+    # widening summer precip
+    fullYearlySummerPrecip <- fullYearlySummerPrecip %>% 
+      pivot_wider(id_cols = c(latitude, longitude),
+                  names_from = year,
+                  values_from = SepSPI,
+                  names_sep = ".") %>% 
+      select(-`NA`) %>% 
+      drop_na() %>% 
+      rename_with(~paste0("summerSPI.", .x), .cols = c(3:46))
+    # saving the tables
+    write.csv(fullAvgSummerPrecip, paste0("outputs/script_02/fullAvgSummerPrecip.csv"), row.names = FALSE)
+    write.csv(fullYearlySummerPrecip, paste0(".outputs/script_02/fullYearlySummerPrecip.csv"), row.names = FALSE)
+    
+  }
+}
+
+```
+
+```{r extracting winter precipitation data}
+
+# figure out what the coldest months are across eastern North America. Spoiler alert: the three coldest months are consistent across 98% of sites and they are Dec, Jan, Feb, so we used this three month period to calculate precipitation
+
+# get 3 coldest months
+coldestMonths <- monthTemps %>%
+  group_by(latitude,longitude) %>%
+  mutate(monthRank = rank(avgTemp)) %>% 
+  dplyr::filter(monthRank %in% c(1:3)) %>%
+  ungroup() %>%
+  distinct(month) %>% 
+  pull(month)
+# technically March is in there for a few sites, let's see how many
+
+# writing a small piece of code to identify for each site if its two coldest months are Dec Jan or Jan Feb
+whichCold <- monthTemps %>% 
+  group_by(latitude, longitude) %>% 
+  mutate(monthRank = rank(avgTemp)) %>% 
+  dplyr::filter(monthRank %in% c(1:3)) %>% 
+  ungroup() %>% 
+  dplyr::select(-avgTemp) %>% 
+  pivot_wider(names_from = monthRank, names_prefix = "month", values_from = month) %>% 
+  mutate(
+    coldest3 = case_when(
+      month1 %in% c("Dec", "Jan", "Feb") & month2 %in% c("Dec", "Jan", "Feb") & month3 %in% c("Dec", "Jan", "Feb")~ "Dec-Jan-Feb",
+      month1 %in% c("Jan", "Feb", "Mar") & month2 %in% c("Jan", "Feb", "Mar") & month3 %in% c("Jan", "Feb", "Mar")~ "Jan-Feb-Mar"
+    )
+  ) %>% 
+  group_by(coldest3) %>% 
+  summarize(n = n())
+# Most sites have dec, jan, feb as the coldest month (98% in fact)
+
+# now creating a function to get the winter precip values--basically the same function as the chunk above
+get.WinterPrecip <- function(file){
+  
+  # first, read in the file
+  df <- read.csv(filename, row.names = 1)
+  # extract precip totals in four warmest months for every site-year combo
+  avgPrecip <- df %>% 
+    mutate(
+      month = month(parse_date_time(paste(year, yday, sep = "-"), orders = "%Y-%j")),
+      year = as.integer(year)
+      ) %>%
+    dplyr::select(latitude, longitude, year, month, yday, prcp..mm.day.) %>%
+    dplyr::filter(month %in% c(12, 1, 2)) %>% 
+    mutate(waterYear = if_else(month == 12, year, year-1)) %>% 
+    summarise(winterPrecip = sum(prcp..mm.day.), .by = c(latitude, longitude, waterYear)) %>% 
+    dplyr::filter(waterYear %!in% c(1979, 2023)) %>% 
+    summarise(avgWinterPrecip = mean(winterPrecip), .by = c(latitude, longitude))
+  
+  # getting SPI data
+  spi1 <- df %>%
+    mutate(
+      month = month(parse_date_time(paste(year, yday, sep = "-"), orders = "%Y-%j")),
+      year = as.integer(year)
+      ) %>%
+    dplyr::select(latitude, longitude, year, month, yday, prcp..mm.day.) %>% 
+    dplyr::filter(!is.na(year)) %>% 
+    summarize(monthPrecip = sum(prcp..mm.day.), .by = c(latitude, longitude, year, month)) %>% 
+    pivot_wider(names_from = c(latitude, longitude), values_from = monthPrecip) 
+  spi2 <- spi1 %>% 
+    dplyr::select(-c(year, month)) %>% 
+    as.matrix() %>% 
+    spi(scale = 3, distribution = "Gamma", na.rm = T)
+  SPI3 <- as.data.frame(spi2$fitted) %>% 
+    add_column(spi1$year, spi1$month, .before = 1) %>% 
+    rename("year" = "spi1$year", "month" = "spi1$month") %>% 
+    mutate(waterYear = ifelse(month == 12, year, year-1)) %>%
+    dplyr::filter(month == 2) %>% 
+    pivot_longer(cols = !c(year, month, waterYear), names_to = c("latitude", "longitude"), names_sep = "_", values_to = "FebSPI") %>%
+    dplyr::select(-c(month, waterYear))
+  
+  # assign the objects I want to the global environment
+  assign("winterSPI", SPI3, envir = .GlobalEnv)
+  assign("avgWinterPrecip", avgPrecip, envir = .GlobalEnv)
+  
+}
+
+# now running the function above to get two dataframes, one for avgWinterPrecip and one for winterSPI
+fullAvgWinterPrecip <- data.frame("latitude" = NA, "longitude" = NA, "avgWinterPrecip" = NA)
+fullYearlyWinterPrecip <- data.frame("year" = NA, "latitude" = NA, "longitude" = NA, "FebSPI" = NA)
+for(i in 1:nCoordFile){
+  
+  # where am i?
+  print(i)
+  # name file
+  filename <- paste0("D:/bumblePhenoProject2024/outputs/script_02/climDataRaw/climDataRaw", i, ".csv")
+  # run function
+  get.WinterPrecip(file = filename)
+
+  # getting everything into dataframes
+  # average winter precipitation
+  fullAvgWinterPrecip <- rbind(fullAvgWinterPrecip, avgWinterPrecip)
+  # winterSPI
+  fullYearlyWinterPrecip <- rbind(fullYearlyWinterPrecip, winterSPI)
+  
+  # writing the files at the very end
+  if(i == nCoordFile){
+    # getting rid of first NA row
+    fullAvgWinterPrecip <- fullAvgWinterPrecip %>% 
+      drop_na()
+    
+    # widening summer precip
+    fullYearlyWinterPrecip <- fullYearlyWinterPrecip %>% 
+      pivot_wider(id_cols = c(latitude,longitude),
+                  names_from = year,
+                  values_from = FebSPI,
+                  names_sep = ".") %>% 
+      dplyr::select(-c(`NA`, `1980`)) %>% 
+      drop_na() %>% 
+      rename_with(~ paste0("winterSPI.", .x), .cols = c(3:45))
+    # saving the tables
+    write.csv(fullAvgWinterPrecip, paste0("outputs/script_02/fullAvgWinterPrecip.csv"), row.names = FALSE)
+    write.csv(fullYearlyWinterPrecip, paste0(".outputs/script_02/fullYearlyWinterPrecip.csv"), row.names = FALSE)
+    
+  }
+}
+
+```
+
+```{r compiling average conditions}
+
+# names of the climate dataset objects
+avgClimateFiles <- c("fullAvgGDD", "fullAvgSummerPrecip", "fullAvgWinterPrecip")
+
+# function that imports climate data
+import.Climate <- function(x){
+  # importing CSV file
+  df <- read.csv(paste0("outputs/script_02/", x, ".csv")) %>% 
+    mutate(across(everything(), as.numeric))
+  
+  # naming the dataframes properly and putting them in the global environment
+  assign(x, df, envir = .GlobalEnv)
+}
+
+# running above function
+lapply(avgClimateFiles, import.Climate)
+
+# creating a function to merge climate data
+merge.Climate <- function(...){
+  list(...) %>% 
+  reduce(inner_join, by = c("latitude", "longitude")) %>% 
+  mutate(
+    coordinates = paste0(latitude, ", ", longitude)
+  ) %>% 
+  dplyr::select(-c(latitude,longitude))
+}
+
+# joining all the dataframes to unicoords
+avgClimateData <- merge.Climate(unicoords, fullAvgGDD, fullAvgSummerPrecip, fullAvgWinterPrecip) %>% 
+  dplyr::select(-site) %>% 
+  relocate(coordinates)
+
+# saving this as a CSV
+write.csv(avgClimateData, "data/clean_data/avg_climate.csv", row.names = FALSE)
+
+```
+
+```{r compiling yearly conditions}
+
+# yearly condition file names
+yearClimateFiles <- c("fullYearlyGDD", "fullYearlySummerPrecip","fullYearlyWinterPrecip")
+
+# importing the data
+lapply(yearClimateFiles, import.Climate)
+
+# merging it all together
+yearClimateData <- merge.Climate(unicoords, fullYearlyGDD, fullYearlySummerPrecip, fullYearlyWinterPrecip) %>%
+  relocate(coordinates) %>% 
+  dplyr::select(-site)
+
+# saving the file
+write.csv(yearClimateData, "data/clean_data/year_climate.csv", row.names = FALSE)
+
+```
+
+```{r clean up workspace!}
+
+gc()
+rm(list = ls())
+
+```
+
+#END OF DOCUMENT
